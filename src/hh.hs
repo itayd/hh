@@ -5,7 +5,7 @@ import Control.Exception(bracket)
 import System.Exit(ExitCode(..), exitWith)
 import System.IO(openFile, IOMode(ReadMode,WriteMode), hGetContents, hPutStrLn, hClose)
 import System.Environment(getArgs, getEnv)
-import Data.List(group, sort, sortBy, isPrefixOf)
+import Data.List(group, sort, sortBy, isInfixOf)
 import Data.Ord(comparing)
 
 withVty :: (Vty -> IO a) -> IO a
@@ -14,10 +14,13 @@ withVty = bracket mkVty shutdown
 fromInt :: Num a => Int -> a
 fromInt = fromInteger.toInteger
 
+data Result = Chosen String | Aborted | SwitchMode
 
-select :: Vty -> Int -> [(String, Int)] -> Int -> Int -> String -> IO (Maybe String)
-select vty height ls' top curr word = do
-    update vty (pic_for_image . vert_cat $ items ++ padding ++ status) { pic_cursor = cursor }
+data Mode = Freq | Recent
+
+select :: Vty -> Int -> [(String, Int)] -> String -> Int -> Int -> String -> IO Result
+select vty height ls' prefix top curr word = do
+    update vty (pic_for_image . vert_cat $ status ++ items ++ fin) { pic_cursor = cursor }
     e <- next_event vty
     case e of
         EvKey KEsc []               -> quit
@@ -27,28 +30,28 @@ select vty height ls' top curr word = do
         EvKey (KASCII 'D') [MCtrl]  -> quit
         EvKey (KASCII 'u') [MCtrl]  -> again top curr ""
         EvKey (KASCII 'U') [MCtrl]  -> again top curr ""
+        EvKey (KASCII '\t') []      -> return SwitchMode
         EvKey KDown []              -> down
         EvKey KUp []                -> up
         EvKey KHome []              -> home
         EvKey (KASCII ch) []        -> reduce ch
         EvKey KBS []                -> enhance
         EvKey KEnter []             -> choose
+        EvResize _ height'          -> select vty height' ls' prefix top curr word
         _                           -> same
         where
 
-            padding = let vi = min (top + height - 2) (length ls - 1)
-                          np = height - vi - 2
-                      in replicate np $ string def_attr " "
+            again                                   = select vty height ls' prefix
 
-            again = select vty height ls'
+            quit                                    = return Aborted
 
-            quit                                    = return Nothing
+            ls                                      = filter (isInfixOf word . fst) ls'
 
-            ls                                      = filter (isPrefixOf word . fst) ls'
+            cursor                                  = Cursor (fromInt $ length word + length prefix + 1) 0
 
-            cursor                                  = Cursor (fromInt $ length word + 1) (fromInt height -1)
+            status                                  = [string def_attr $ prefix ++ '>' : word]
 
-            status                                  = [string def_attr $ '>' : word]
+            fin                                     = [string def_attr " "]
 
             items                                   = map mkLine [top..min (top + height - 2) (length ls - 1)]
 
@@ -60,7 +63,9 @@ select vty height ls' top curr word = do
               | length word > 0                     = again top curr $ init word
               | otherwise                           = same
 
-            choose                                  = return . Just $ fst (ls !! curr)
+            choose
+              | curr < length ls                    = return . Chosen $ fst (ls !! curr)
+              | otherwise                           = same
 
             home                                    = again 0 0 word
 
@@ -101,16 +106,35 @@ histogram as = let mk a = (head a, length a) in map mk (group $ sort as)
 freqSort :: Ord a => [a] -> [(a,Int)]
 freqSort = sortBy (comparing snd) . histogram
 
-main :: IO ()
-main = do
-    ls <- fmap (filter $ not . null) (getArgs >>= parseArgs >>= fileLines)
+vtyHeight :: Vty -> IO Int
+vtyHeight vty = do
+    bounds <- display_bounds $ terminal vty
+    return $ fromInteger( toInteger $ region_height bounds ) :: IO Int
+
+play :: Mode -> [String] -> IO ()
+play mode ls = do
+
+    let f' = case mode of
+                Recent -> reverse . histogram
+                Freq   -> reverse . freqSort
+        f  = f' . filter (not . null)
 
     r <- withVty $ \vty -> do
-        bounds <- display_bounds $ terminal vty
-        let height = fromInteger (toInteger $ region_height bounds) :: Int
-        select vty height (reverse $ freqSort ls) 0 0 ""
+        height <- vtyHeight vty
+        select vty height (f ls) (modeTitle mode) 0 0 ""
 
     case r of
-        Nothing -> exitWith $ ExitFailure 1
-        Just s -> write s
+        Aborted -> exitWith $ ExitFailure 1
+        Chosen s -> write s
+        SwitchMode -> play (nextMode mode) ls
+
+        where
+            nextMode Freq = Recent
+            nextMode Recent = Freq
+
+            modeTitle Freq = "F"
+            modeTitle Recent = "R"
+
+main :: IO ()
+main = getArgs >>= parseArgs >>= fileLines >>= play Freq
 

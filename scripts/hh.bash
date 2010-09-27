@@ -1,8 +1,8 @@
-hh_() {
+h() {
     rc=0
-    if /usr/local/bin/hh; then
+    if hh; then
         local what=`cat /tmp/.hh.tmp | head -n 1`
-        echo $what >> ~/.bash_history
+        rm -f /tmp/.hh.tmp
         eval $what
         local rc=$?
     fi
