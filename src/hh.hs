@@ -11,45 +11,62 @@ import Data.Ord(comparing)
 withVty :: (Vty -> IO a) -> IO a
 withVty = bracket mkVty shutdown
 
-select :: Vty -> Int -> Int -> Int -> String -> [(String, Int)] -> IO (Maybe String)
-select vty height top curr word ls' = do
-    update vty $ pic_for_image . vert_cat $ map mkLine [top..min (top + height) (length ls - 1)]
+select :: Vty -> Int -> [(String, Int)] -> Int -> Int -> String -> IO (Maybe String)
+select vty height ls' top curr word = do
+    update vty $ pic_for_image . vert_cat $ items ++ padding ++ status
     e <- next_event vty
     case e of
-        EvKey KEsc []         -> return Nothing
-        EvKey KDown []        -> down
-        EvKey KUp []          -> up
-        EvKey KHome []        -> select vty height 0 0 word ls'
-        EvKey (KASCII ch) []  -> reduce ch
-        EvKey KBS []          -> enhance
-        EvKey KEnter []       -> choose
-        _                     -> select vty height top curr word ls'
+        EvKey KEsc []               -> quit
+        EvKey (KASCII 'c') [MCtrl]  -> quit
+        EvKey (KASCII 'C') [MCtrl]  -> quit
+        EvKey KDown []              -> down
+        EvKey KUp []                -> up
+        EvKey KHome []              -> home
+        EvKey (KASCII ch) []        -> reduce ch
+        EvKey KBS []                -> enhance
+        EvKey KEnter []             -> choose
+        _                           -> same
         where
-            ls = filter (isPrefixOf word . fst) ls'
 
-            same      = select vty height top curr word ls'
+            padding = let vi = min (top + height - 2) (length ls - 1)
+                          np = height - vi - 2
+                      in replicate np $ string def_attr " "
 
-            reduce ch = select vty height 0 0 (word ++ [ch]) ls'
+            again = select vty height ls'
+
+            quit                                    = return Nothing
+
+            ls                                      = filter (isPrefixOf word . fst) ls'
+
+            status                                  = [string def_attr $ '>' : word]
+
+            items                                   = map mkLine [top..min (top + height - 2) (length ls - 1)]
+
+            same                                    = again top curr word
+
+            reduce ch                               = again 0 0 $ word ++ [ch]
 
             enhance
-              | length word > 0                 = select vty height top curr (init word) ls'
-              | otherwise                       = same
+              | length word > 0                     = again top curr $ init word
+              | otherwise                           = same
 
-            choose = return . Just $ fst (ls !! curr)
+            choose                                  = return . Just $ fst (ls !! curr)
+
+            home                                    = again 0 0 word
 
             up
-              | top == 0 && curr == 0           = same
-              | top == curr                     = select vty height (top - 1) (curr - 1) word ls'
-              | otherwise                       = select vty height top (curr - 1) word ls'
+              | top == 0 && curr == 0               = same
+              | top == curr                         = again (top - 1) (curr - 1) word
+              | otherwise                           = again top (curr - 1) word
 
             down
-              | (curr + 1) >= length ls         = same
-              | (top + height) == (curr + 1 )   = select vty height (top + 1) (curr + 1) word ls'
-              | otherwise                       = select vty height top (curr + 1) word ls'
+              | (curr + 1) >= length ls             = same
+              | (top + height - 1) == (curr + 1 )   = again (top + 1) (curr + 1) word
+              | otherwise                           = again top (curr + 1) word
 
             mkLine n
-                | n == curr = string sel_attr $ txt $ ls !! n
-                | otherwise = string def_attr $ txt $ ls !! n
+                | n == curr                         = string sel_attr $ txt $ ls !! n
+                | otherwise                         = string def_attr $ txt $ ls !! n
                 where
                     txt = fst
                     sel_attr = def_attr `with_style` standout
@@ -81,7 +98,7 @@ main = do
     r <- withVty $ \vty -> do
         bounds <- display_bounds $ terminal vty
         let height = fromInteger (toInteger $ region_height bounds) :: Int
-        select vty height 0 0 "" $ reverse $ freqSort ls
+        select vty height (reverse $ freqSort ls) 0 0 ""
 
     case r of
         Nothing -> exitWith $ ExitFailure 1
