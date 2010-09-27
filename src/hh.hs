@@ -5,43 +5,54 @@ import Control.Exception(bracket)
 import System.Exit(ExitCode(..), exitWith)
 import System.IO(openFile, IOMode(ReadMode,WriteMode), hGetContents, hPutStrLn, hClose)
 import System.Environment(getArgs, getEnv)
-import Data.List(group, sort, sortBy)
+import Data.List(group, sort, sortBy, isPrefixOf)
 import Data.Ord(comparing)
 
 withVty :: (Vty -> IO a) -> IO a
 withVty = bracket mkVty shutdown
 
-select :: Vty -> Int -> Int -> Int -> [(String, Int)] -> IO (Maybe String)
-select vty height top curr ls = do
+select :: Vty -> Int -> Int -> Int -> String -> [(String, Int)] -> IO (Maybe String)
+select vty height top curr word ls' = do
     update vty $ pic_for_image . vert_cat $ map mkLine [top..min (top + height) (length ls - 1)]
     e <- next_event vty
     case e of
-        EvKey (KASCII 'Q') [] -> return Nothing
-        EvKey (KASCII 'q') [] -> return Nothing
         EvKey KEsc []         -> return Nothing
         EvKey KDown []        -> down
         EvKey KUp []          -> up
-        EvKey KHome []        -> select vty height 0 0 ls
-        EvKey (KASCII ' ') [] -> choose
+        EvKey KHome []        -> select vty height 0 0 word ls'
+        EvKey (KASCII ch) []  -> reduce ch
+        EvKey KBS []          -> enhance
         EvKey KEnter []       -> choose
-        EvKey KBackTab []     -> choose
-        _                     -> select vty height top curr ls
+        _                     -> select vty height top curr word ls'
         where
+            ls = filter (isPrefixOf word . fst) ls'
+
+            same      = select vty height top curr word ls'
+
+            reduce ch = select vty height 0 0 (word ++ [ch]) ls'
+
+            enhance
+              | length word > 0                 = select vty height top curr (init word) ls'
+              | otherwise                       = same
+
             choose = return . Just $ fst (ls !! curr)
+
             up
-              | top == 0 && curr == 0 = select vty height top curr ls
-              | top == curr = select vty height (top - 1) (curr - 1) ls
-              | otherwise = select vty height top (curr - 1) ls
+              | top == 0 && curr == 0           = same
+              | top == curr                     = select vty height (top - 1) (curr - 1) word ls'
+              | otherwise                       = select vty height top (curr - 1) word ls'
+
             down
-              | (curr + 1) == length ls = select vty height top curr ls
-              | (top + height - 1) == curr = select vty height (top + 1) (curr + 1) ls
-              | otherwise = select vty height top (curr + 1) ls
-            sel_attr = def_attr `with_style` standout
+              | (curr + 1) >= length ls         = same
+              | (top + height) == (curr + 1 )   = select vty height (top + 1) (curr + 1) word ls'
+              | otherwise                       = select vty height top (curr + 1) word ls'
+
             mkLine n
                 | n == curr = string sel_attr $ txt $ ls !! n
                 | otherwise = string def_attr $ txt $ ls !! n
                 where
                     txt = fst
+                    sel_attr = def_attr `with_style` standout
 
 parseArgs :: [String] -> IO String
 parseArgs [] = fmap (++ "/.bash_history") $ getEnv "HOME"
@@ -65,12 +76,12 @@ freqSort = sortBy (comparing snd) . histogram
 
 main :: IO ()
 main = do
-    ls <- ( getArgs >>= parseArgs >>= fileLines )
+    ls <- fmap (filter $ not . null) ( getArgs >>= parseArgs >>= fileLines)
 
     r <- withVty $ \vty -> do
         bounds <- display_bounds $ terminal vty
         let height = fromInteger (toInteger $ region_height bounds) :: Int
-        select vty height 0 0 $ reverse $ freqSort ls
+        select vty height 0 0 "" $ reverse $ freqSort ls
 
     case r of
         Nothing -> exitWith $ ExitFailure 1
