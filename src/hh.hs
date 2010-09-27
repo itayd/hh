@@ -115,7 +115,7 @@ play :: Mode -> [String] -> IO ()
 play mode ls = do
 
     let f' = case mode of
-                Recent -> reverse . histogram
+                Recent -> reverse . map (\l -> (l,1))
                 Freq   -> reverse . freqSort
         f  = f' . filter (not . null)
 
