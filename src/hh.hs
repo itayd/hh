@@ -11,14 +11,22 @@ import Data.Ord(comparing)
 withVty :: (Vty -> IO a) -> IO a
 withVty = bracket mkVty shutdown
 
+fromInt :: Num a => Int -> a
+fromInt = fromInteger.toInteger
+
+
 select :: Vty -> Int -> [(String, Int)] -> Int -> Int -> String -> IO (Maybe String)
 select vty height ls' top curr word = do
-    update vty $ pic_for_image . vert_cat $ items ++ padding ++ status
+    update vty (pic_for_image . vert_cat $ items ++ padding ++ status) { pic_cursor = cursor }
     e <- next_event vty
     case e of
         EvKey KEsc []               -> quit
         EvKey (KASCII 'c') [MCtrl]  -> quit
         EvKey (KASCII 'C') [MCtrl]  -> quit
+        EvKey (KASCII 'd') [MCtrl]  -> quit
+        EvKey (KASCII 'D') [MCtrl]  -> quit
+        EvKey (KASCII 'u') [MCtrl]  -> again top curr ""
+        EvKey (KASCII 'U') [MCtrl]  -> again top curr ""
         EvKey KDown []              -> down
         EvKey KUp []                -> up
         EvKey KHome []              -> home
@@ -37,6 +45,8 @@ select vty height ls' top curr word = do
             quit                                    = return Nothing
 
             ls                                      = filter (isPrefixOf word . fst) ls'
+
+            cursor                                  = Cursor (fromInt $ length word + 1) (fromInt height -1)
 
             status                                  = [string def_attr $ '>' : word]
 
@@ -93,7 +103,7 @@ freqSort = sortBy (comparing snd) . histogram
 
 main :: IO ()
 main = do
-    ls <- fmap (filter $ not . null) ( getArgs >>= parseArgs >>= fileLines)
+    ls <- fmap (filter $ not . null) (getArgs >>= parseArgs >>= fileLines)
 
     r <- withVty $ \vty -> do
         bounds <- display_bounds $ terminal vty

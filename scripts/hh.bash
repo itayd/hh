@@ -1,17 +1,12 @@
-__hh() {
-	local cur pref opts
-	COMPREPLY=()
-	cur="${COMP_WORDS[COMP_CWORD]}"
-
-    if hh; then
-        opts=`cat /tmp/.hh.tmp`
-        rm -f /tmp/.hh.tmp
-	    COMPREPLY=( $(compgen -W "${opts}" -- ${cur} ) )
-        return 0
-    else
-        return 1
+hh_() {
+    rc=0
+    if /usr/local/bin/hh; then
+        local what=`cat /tmp/.hh.tmp | head -n 1`
+        echo $what >> ~/.bash_history
+        eval $what
+        local rc=$?
     fi
+    rm -f /tmp/.hh.tmp
+    return $rc
 }
-
-complete -F __hh _
 
