@@ -16,7 +16,7 @@ fromInt = fromInteger.toInteger
 
 data Result = Chosen String | Aborted | SwitchMode
 
-data Mode = Freq | Recent
+data Mode = Freq | Recent | Favorites
 
 select :: Vty -> Int -> [(String, Int)] -> String -> Int -> Int -> String -> IO Result
 select vty height ls' prefix top curr word = do
@@ -92,7 +92,10 @@ parseArgs (a:[]) = return a
 parseArgs _ = error "too many arguments"
 
 fileLines :: String -> IO [String]
-fileLines fn = fmap lines $ openFile fn ReadMode >>= hGetContents
+fileLines fn = catch go handler
+    where
+        go = fmap lines $ openFile fn ReadMode >>= hGetContents
+        handler _ = return []
 
 write :: String -> IO ()
 write what = do
@@ -111,13 +114,21 @@ vtyHeight vty = do
     bounds <- display_bounds $ terminal vty
     return $ fromInteger( toInteger $ region_height bounds ) :: IO Int
 
-play :: Mode -> [String] -> IO ()
-play mode ls = do
+play :: Mode -> String -> IO ()
+play mode fn = do
 
     let f' = case mode of
-                Recent -> reverse . map (\l -> (l,1))
-                Freq   -> reverse . freqSort
+                Recent      -> reverse . map (\l -> (l,1))
+                Freq        -> reverse . freqSort
+                Favorites   -> reverse . freqSort
         f  = f' . filter (not . null)
+
+    home <- getEnv "HOME"
+
+    ls <- fileLines $ case mode of
+            Recent -> fn
+            Freq -> fn
+            Favorites -> home ++ "/.hh_favorites"
 
     r <- withVty $ \vty -> do
         height <- vtyHeight vty
@@ -126,15 +137,17 @@ play mode ls = do
     case r of
         Aborted -> exitWith $ ExitFailure 1
         Chosen s -> write s
-        SwitchMode -> play (nextMode mode) ls
+        SwitchMode -> play (nextMode mode) fn
 
         where
             nextMode Freq = Recent
-            nextMode Recent = Freq
+            nextMode Recent = Favorites
+            nextMode Favorites = Freq
 
             modeTitle Freq = "F"
             modeTitle Recent = "R"
+            modeTitle Favorites = "*"
 
 main :: IO ()
-main = getArgs >>= parseArgs >>= fileLines >>= play Freq
+main = getArgs >>= parseArgs >>= play Freq
 
