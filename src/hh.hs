@@ -144,7 +144,7 @@ play cfg = do
         height <- vtyHeight vty
         select vty height (func ls) title 0 0 ""
     case r of
-        Aborted -> exitWith ExitSuccess
+        Aborted -> exitWith $ ExitFailure 1
         Chosen s -> write s
         SwitchMode -> play $ cfg { mode = next }
 
