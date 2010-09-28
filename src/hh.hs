@@ -23,6 +23,7 @@ mkConfig = do
 type FilterFunc = [String] -> [(String,Int)]
 
 data Behaviour = Behaviour {
+    mbPrev :: Mode,
     mbNext :: Mode,
     mbTitle :: String,
     mbFn :: Config -> String,
@@ -30,9 +31,9 @@ data Behaviour = Behaviour {
 }
 
 modes :: [(Mode,Behaviour)]
-modes = [(Freq,      Behaviour Recent    "F" historyFileName   (reverse . freqSort) ),
-         (Recent,    Behaviour Favorites "R" historyFileName   (reverse . same) ),
-         (Favorites, Behaviour Freq      "*" favoritesFileName (reverse . same) )]
+modes = [(Freq,      Behaviour Favorites  Recent    "F" historyFileName   (reverse . freqSort) ),
+         (Recent,    Behaviour Freq       Favorites "R" historyFileName   (reverse . same) ),
+         (Favorites, Behaviour Recent     Freq      "*" favoritesFileName (reverse . same) )]
     where
         same = map $ \l -> (l,1)
 
@@ -42,7 +43,7 @@ withVty = bracket mkVty shutdown
 fromInt :: Num a => Int -> a
 fromInt = fromInteger.toInteger
 
-data Result = Chosen String | Aborted | SwitchMode
+data Result = Chosen String | Aborted | PrevMode | NextMode
 
 data Mode = Freq | Recent | Favorites deriving (Eq)
 
@@ -58,7 +59,9 @@ select vty height ls' prefix top curr word = do
         EvKey (KASCII 'D') [MCtrl]  -> quit
         EvKey (KASCII 'u') [MCtrl]  -> again top curr ""
         EvKey (KASCII 'U') [MCtrl]  -> again top curr ""
-        EvKey (KASCII '\t') []      -> return SwitchMode
+        EvKey (KASCII '\t') []      -> same
+        EvKey KRight []             -> return NextMode
+        EvKey KLeft []              -> return PrevMode
         EvKey KDown []              -> down
         EvKey KUp []                -> up
         EvKey KHome []              -> home
@@ -146,11 +149,13 @@ play cfg = do
     case r of
         Aborted -> exitWith $ ExitFailure 1
         Chosen s -> write s
-        SwitchMode -> play $ cfg { mode = next }
+        NextMode -> play $ cfg { mode = next }
+        PrevMode -> play $ cfg { mode = prev }
 
         where
             b     = fromJust $ lookup (mode cfg) modes
             next  = mbNext b
+            prev  = mbPrev b
             title = mbTitle b
             fn    = mbFn b cfg
             func  = mbFunc b . filter (not . null)
