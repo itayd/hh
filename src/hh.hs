@@ -4,7 +4,7 @@ import Graphics.Vty
 import Control.Exception(bracket)
 import System.Exit(ExitCode(..), exitWith)
 import System.IO(openFile, IOMode(ReadMode,WriteMode), hGetContents, hPutStrLn, hClose)
-import System.Environment(getEnv)
+import System.Environment(getEnv, getArgs)
 import Data.List(group, sort, sortBy, isInfixOf)
 import Data.Ord(comparing)
 import Data.Maybe(fromJust)
@@ -43,7 +43,7 @@ withVty = bracket mkVty shutdown
 fromInt :: Num a => Int -> a
 fromInt = fromInteger.toInteger
 
-data Result = Chosen String | Aborted | PrevMode | NextMode
+data Result = Chosen String | Aborted | PrevMode String | NextMode String
 
 data Mode = Freq | Recent | Favorites deriving (Eq)
 
@@ -60,8 +60,8 @@ select vty height ls' prefix top curr word = do
         EvKey (KASCII 'u') [MCtrl]  -> again top curr ""
         EvKey (KASCII 'U') [MCtrl]  -> again top curr ""
         EvKey (KASCII '\t') []      -> same
-        EvKey KRight []             -> return NextMode
-        EvKey KLeft []              -> return PrevMode
+        EvKey KRight []             -> return $ NextMode word
+        EvKey KLeft []              -> return $ PrevMode word
         EvKey KDown []              -> down
         EvKey KUp []                -> up
         EvKey KHome []              -> home
@@ -140,17 +140,17 @@ vtyHeight vty = do
     bounds <- display_bounds $ terminal vty
     return $ fromInteger( toInteger $ region_height bounds ) :: IO Int
 
-play :: Config -> IO ()
-play cfg = do
+play :: String -> Config -> IO ()
+play word cfg = do
     ls <- fileLines fn
     r <- withVty $ \vty -> do
         height <- vtyHeight vty
-        select vty height (func ls) title 0 0 ""
+        select vty height (func ls) title 0 0 word
     case r of
         Aborted -> exitWith $ ExitFailure 1
         Chosen s -> write s
-        NextMode -> play $ cfg { mode = next }
-        PrevMode -> play $ cfg { mode = prev }
+        NextMode s -> play s $ cfg { mode = next }
+        PrevMode s -> play s $ cfg { mode = prev }
 
         where
             b     = fromJust $ lookup (mode cfg) modes
@@ -161,5 +161,7 @@ play cfg = do
             func  = mbFunc b . filter (not . null)
 
 main :: IO ()
-main = mkConfig >>= play
+main = do
+    word <- fmap unwords getArgs
+    mkConfig >>= play word
 
