@@ -56,6 +56,15 @@ data Result = Chosen String | Aborted | PrevMode String | NextMode String
 
 data Mode = Freq | Recent | Favorites deriving (Eq,Show,Read)
 
+maxPrefix :: Eq a => [[a]] -> [a] -> [a]
+maxPrefix [] p = p
+maxPrefix ps p
+    | length p > minimum (map length ps) = p
+    | all (isPrefixOf next) ps = maxPrefix ps next
+    | otherwise = p
+    where
+        next = p ++ [head ps !! length p]
+
 select :: Vty -> Int -> [(String, Int)] -> String -> Int -> Int -> String -> IO Result
 select vty height ls' prefix top curr word = do
     update vty (pic_for_image . vert_cat $ status ++ items ++ fin) { pic_cursor = cursor }
@@ -68,7 +77,7 @@ select vty height ls' prefix top curr word = do
         EvKey (KASCII 'D')  [MCtrl] -> quit
         EvKey (KASCII 'u')  [MCtrl] -> again top curr ""
         EvKey (KASCII 'U')  [MCtrl] -> again top curr ""
-        EvKey (KASCII '\t') []      -> same
+        EvKey (KASCII '\t') []      -> complete
         EvKey KRight        []      -> return $ NextMode word
         EvKey KLeft         []      -> return $ PrevMode word
         EvKey KDown         []      -> down
@@ -79,52 +88,56 @@ select vty height ls' prefix top curr word = do
         EvKey KEnter        []      -> choose
         EvResize _ height'          -> select vty height' ls' prefix top curr word
         _                           -> same
-        where
+    where
 
-            again                                   = select vty height ls' prefix
+        again                                   = select vty height ls' prefix
 
-            same                                    = again top curr word
+        same                                    = again top curr word
 
-            quit                                    = return Aborted
+        quit                                    = return Aborted
 
-            ls                                      = filter (isPrefixOf word . fst) ls'
+        ls                                      = map head . group $ filter (isPrefixOf word . fst) ls'
 
-            cursor                                  = Cursor (fromInt $ length word + length prefix + 1) 0
+        cursor                                  = Cursor (fromInt $ length word + length prefix + 1) 0
 
-            status                                  = [string def_attr $ prefix ++ '>' : word ]
+        status                                  = [string def_attr $ prefix ++ '>' : word ]
 
-            fin                                     = [string def_attr " "]
+        fin                                     = [string def_attr " "]
 
-            items                                   = map mkLine [top..min (top + height - 2) (length ls - 1)]
+        items                                   = map mkLine [top..min (top + height - 2) (length ls - 1)]
 
-            reduce ch                               = again 0 0 $ word ++ [ch]
+        complete                                = do
+            let mp = maxPrefix (map fst ls) word
+            again 0 0 mp
 
-            enhance
-              | length word > 0                     = again top curr $ init word
-              | otherwise                           = same
+        reduce ch                               = again 0 0 $ word ++ [ch]
 
-            choose
-              | curr < length ls                    = return . Chosen $ fst (ls !! curr)
-              | otherwise                           = same
+        enhance
+          | length word > 0                     = again top curr $ init word
+          | otherwise                           = same
 
-            home                                    = again 0 0 word
+        choose
+          | curr < length ls                    = return . Chosen $ fst (ls !! curr)
+          | otherwise                           = same
 
-            up
-              | top == 0 && curr == 0               = same
-              | top == curr                         = again (top - 1) (curr - 1) word
-              | otherwise                           = again top (curr - 1) word
+        home                                    = again 0 0 word
 
-            down
-              | (curr + 1) >= length ls             = same
-              | (top + height - 1) == (curr + 1 )   = again (top + 1) (curr + 1) word
-              | otherwise                           = again top (curr + 1) word
+        up
+          | top == 0 && curr == 0               = same
+          | top == curr                         = again (top - 1) (curr - 1) word
+          | otherwise                           = again top (curr - 1) word
 
-            mkLine n
-                | n == curr                         = string sel_attr $ txt $ ls !! n
-                | otherwise                         = string def_attr $ txt $ ls !! n
-                where
-                    txt = fst
-                    sel_attr = def_attr `with_style` standout
+        down
+          | (curr + 1) >= length ls             = same
+          | (top + height - 1) == (curr + 1 )   = again (top + 1) (curr + 1) word
+          | otherwise                           = again top (curr + 1) word
+
+        mkLine n
+            | n == curr                         = string sel_attr $ txt $ ls !! n
+            | otherwise                         = string def_attr $ txt $ ls !! n
+            where
+                txt = fst
+                sel_attr = def_attr `with_style` standout
 
 fileLines :: String -> IO [String]
 fileLines fn = catch go handler
@@ -157,14 +170,13 @@ play word cfg = do
         Chosen s -> write s >> saveConfig cfg
         NextMode s -> play s $ cfg { mode = next }
         PrevMode s -> play s $ cfg { mode = prev }
-
-        where
-            b     = fromJust $ lookup (mode cfg) modes
-            next  = mbNext b
-            prev  = mbPrev b
-            title = mbTitle b
-            fn    = mbFn b cfg
-            func  = mbFunc b . filter (not . null)
+    where
+        b     = fromJust $ lookup (mode cfg) modes
+        next  = mbNext b
+        prev  = mbPrev b
+        title = mbTitle b
+        fn    = mbFn b cfg
+        func  = mbFunc b . filter (not . null)
 
 main :: IO ()
 main = do
