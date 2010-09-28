@@ -4,9 +4,37 @@ import Graphics.Vty
 import Control.Exception(bracket)
 import System.Exit(ExitCode(..), exitWith)
 import System.IO(openFile, IOMode(ReadMode,WriteMode), hGetContents, hPutStrLn, hClose)
-import System.Environment(getArgs, getEnv)
+import System.Environment(getEnv)
 import Data.List(group, sort, sortBy, isInfixOf)
 import Data.Ord(comparing)
+import Data.Maybe(fromJust)
+
+data Config = Config {
+    mode :: Mode,
+    historyFileName :: String,
+    favoritesFileName :: String
+}
+
+mkConfig :: IO Config
+mkConfig = do
+    h <- getEnv "HOME"
+    return $ Config Freq (h ++ "/.bash_history") (h ++ "/.hh_favorites")
+
+type FilterFunc = [String] -> [(String,Int)]
+
+data Behaviour = Behaviour {
+    mbNext :: Mode,
+    mbTitle :: String,
+    mbFn :: Config -> String,
+    mbFunc :: FilterFunc
+}
+
+modes :: [(Mode,Behaviour)]
+modes = [(Freq,      Behaviour Recent    "F" historyFileName   (reverse . freqSort) ),
+         (Recent,    Behaviour Favorites "R" historyFileName   (reverse . same) ),
+         (Favorites, Behaviour Freq      "*" favoritesFileName (reverse . same) )]
+    where
+        same = map $ \l -> (l,1)
 
 withVty :: (Vty -> IO a) -> IO a
 withVty = bracket mkVty shutdown
@@ -16,7 +44,7 @@ fromInt = fromInteger.toInteger
 
 data Result = Chosen String | Aborted | SwitchMode
 
-data Mode = Freq | Recent | Favorites
+data Mode = Freq | Recent | Favorites deriving (Eq)
 
 select :: Vty -> Int -> [(String, Int)] -> String -> Int -> Int -> String -> IO Result
 select vty height ls' prefix top curr word = do
@@ -86,11 +114,6 @@ select vty height ls' prefix top curr word = do
                     txt = fst
                     sel_attr = def_attr `with_style` standout
 
-parseArgs :: [String] -> IO String
-parseArgs [] = fmap (++ "/.bash_history") $ getEnv "HOME"
-parseArgs (a:[]) = return a
-parseArgs _ = error "too many arguments"
-
 fileLines :: String -> IO [String]
 fileLines fn = catch go handler
     where
@@ -103,10 +126,10 @@ write what = do
     hPutStrLn h what
     hClose h
 
-histogram :: Ord a => [a] -> [(a,Int)]
+histogram :: FilterFunc
 histogram as = let mk a = (head a, length a) in map mk (group $ sort as)
 
-freqSort :: Ord a => [a] -> [(a,Int)]
+freqSort :: FilterFunc
 freqSort = sortBy (comparing snd) . histogram
 
 vtyHeight :: Vty -> IO Int
@@ -114,40 +137,24 @@ vtyHeight vty = do
     bounds <- display_bounds $ terminal vty
     return $ fromInteger( toInteger $ region_height bounds ) :: IO Int
 
-play :: Mode -> String -> IO ()
-play mode fn = do
-
-    let f' = case mode of
-                Recent      -> reverse . map (\l -> (l,1))
-                Freq        -> reverse . freqSort
-                Favorites   -> reverse . freqSort
-        f  = f' . filter (not . null)
-
-    home <- getEnv "HOME"
-
-    ls <- fileLines $ case mode of
-            Recent -> fn
-            Freq -> fn
-            Favorites -> home ++ "/.hh_favorites"
-
+play :: Config -> IO ()
+play cfg = do
+    ls <- fileLines fn
     r <- withVty $ \vty -> do
         height <- vtyHeight vty
-        select vty height (f ls) (modeTitle mode) 0 0 ""
-
+        select vty height (func ls) title 0 0 ""
     case r of
-        Aborted -> exitWith $ ExitFailure 1
+        Aborted -> exitWith ExitSuccess
         Chosen s -> write s
-        SwitchMode -> play (nextMode mode) fn
+        SwitchMode -> play $ cfg { mode = next }
 
         where
-            nextMode Freq = Recent
-            nextMode Recent = Favorites
-            nextMode Favorites = Freq
-
-            modeTitle Freq = "F"
-            modeTitle Recent = "R"
-            modeTitle Favorites = "*"
+            b     = fromJust $ lookup (mode cfg) modes
+            next  = mbNext b
+            title = mbTitle b
+            fn    = mbFn b cfg
+            func  = mbFunc b . filter (not . null)
 
 main :: IO ()
-main = getArgs >>= parseArgs >>= play Freq
+main = mkConfig >>= play
 
