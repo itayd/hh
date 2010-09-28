@@ -3,7 +3,7 @@
 import Graphics.Vty
 import Control.Exception(bracket)
 import System.Exit(ExitCode(..), exitWith)
-import System.IO(openFile, IOMode(ReadMode,WriteMode), hGetContents, hPutStrLn, hClose)
+import System.IO(withFile, openFile, IOMode(ReadMode,WriteMode), hGetContents, hGetLine, hPutStrLn )
 import System.Environment(getEnv, getArgs)
 import Data.List(group, sort, sortBy, isInfixOf)
 import Data.Ord(comparing)
@@ -13,12 +13,21 @@ data Config = Config {
     mode :: Mode,
     historyFileName :: String,
     favoritesFileName :: String
-}
+} deriving (Show,Read)
 
-mkConfig :: IO Config
-mkConfig = do
-    h <- getEnv "HOME"
-    return $ Config Freq (h ++ "/.bash_history") (h ++ "/.hh_favorites")
+loadConfig :: IO Config
+loadConfig = do
+    home <- getEnv "HOME"
+    let rcFile = home ++ "/.hhrc"
+    catch (load rcFile) $ def home
+        where
+            load fn = fmap read (withFile fn ReadMode hGetLine) :: IO Config
+            def h _ = return $ Config Freq (h ++ "/.bash_history") (h ++ "/.hh_favorites")
+
+saveConfig :: Config -> IO ()
+saveConfig cfg = do
+    home <- getEnv "HOME"
+    withFile (home ++ "/.hhrc" ) WriteMode $ flip hPutStrLn (show cfg)
 
 type FilterFunc = [String] -> [(String,Int)]
 
@@ -45,7 +54,7 @@ fromInt = fromInteger.toInteger
 
 data Result = Chosen String | Aborted | PrevMode String | NextMode String
 
-data Mode = Freq | Recent | Favorites deriving (Eq)
+data Mode = Freq | Recent | Favorites deriving (Eq,Show,Read)
 
 select :: Vty -> Int -> [(String, Int)] -> String -> Int -> Int -> String -> IO Result
 select vty height ls' prefix top curr word = do
@@ -124,10 +133,7 @@ fileLines fn = catch go handler
         handler _ = return []
 
 write :: String -> IO ()
-write what = do
-    h <- openFile "/tmp/.hh.tmp" WriteMode
-    hPutStrLn h what
-    hClose h
+write what = withFile "/tmp/.hh.tmp" WriteMode $ flip hPutStrLn what
 
 histogram :: FilterFunc
 histogram as = let mk a = (head a, length a) in map mk (group $ sort as)
@@ -148,7 +154,7 @@ play word cfg = do
         select vty height (func ls) title 0 0 word
     case r of
         Aborted -> exitWith $ ExitFailure 1
-        Chosen s -> write s
+        Chosen s -> write s >> saveConfig cfg
         NextMode s -> play s $ cfg { mode = next }
         PrevMode s -> play s $ cfg { mode = prev }
 
@@ -163,5 +169,8 @@ play word cfg = do
 main :: IO ()
 main = do
     word <- fmap unwords getArgs
-    mkConfig >>= play word
+    cfg <- loadConfig
+    play word cfg
+
+
 
