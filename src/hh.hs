@@ -5,19 +5,23 @@ import Control.Exception(bracket)
 import System.Exit(ExitCode(..), exitWith)
 import System.IO(withFile, openFile, IOMode(ReadMode,WriteMode), hGetContents, hGetLine, hPutStrLn )
 import System.Environment(getEnv, getArgs)
-import Data.List(group, sort, sortBy, isPrefixOf)
+import Data.List(group, nubBy, sort, sortBy, isPrefixOf)
 import Data.Ord(comparing)
 import Data.Maybe(fromJust)
+import Data.Function(on)
 
 data Config = Config {
-    mode :: Mode,
-    historyFileName :: String,
-    favoritesFileName :: String
+    mode                :: Mode,
+    historyFileName     :: String,
+    favoritesFileName   :: String
 } deriving (Show,Read)
+
+getHome :: IO String
+getHome = getEnv "HOME"
 
 loadConfig :: IO Config
 loadConfig = do
-    home <- getEnv "HOME"
+    home <- getHome
     let rcFile = home ++ "/.hhrc"
     catch (load rcFile) $ def home
         where
@@ -26,25 +30,41 @@ loadConfig = do
 
 saveConfig :: Config -> IO ()
 saveConfig cfg = do
-    home <- getEnv "HOME"
+    home <- getHome
     withFile (home ++ "/.hhrc" ) WriteMode $ flip hPutStrLn (show cfg)
 
-type FilterFunc = [String] -> [(String,Int)]
+type Item = (String, Int)
+
+type FilterFunc = [String] -> [Item]
+type ShowFunc = Bool -> Item -> Image
+
+data Mode = Freq | Recent | Favorites deriving (Eq,Show,Read)
 
 data Behaviour = Behaviour {
-    mbPrev :: Mode,
-    mbNext :: Mode,
-    mbTitle :: String,
-    mbFn :: Config -> String,
-    mbFunc :: FilterFunc
+    mbPrev      :: Mode,
+    mbNext      :: Mode,
+    mbTitle     :: String,
+    mbFn        :: Config -> String,
+    mbFunc      :: FilterFunc,
+    mbShow      :: ShowFunc
 }
 
 modes :: [(Mode,Behaviour)]
-modes = [(Freq,      Behaviour Favorites  Recent    "F" historyFileName   (reverse . freqSort) ),
-         (Recent,    Behaviour Freq       Favorites "R" historyFileName   (reverse . same) ),
-         (Favorites, Behaviour Recent     Freq      "*" favoritesFileName (reverse . same) )]
+modes = [(Freq,      Behaviour Favorites  Recent    "F" historyFileName   (reverse . freqSort) onlyStr  ),
+         (Recent,    Behaviour Freq       Favorites "R" historyFileName   (reverse . same)     withN    ),
+         (Favorites, Behaviour Recent     Freq      "*" favoritesFileName (reverse . same)     onlyStr  )]
     where
-        same = map $ \l -> (l,1)
+        same                  = flip zip [1..]
+
+        sel_attr              = def_attr `with_style` standout
+
+        onlyStr  False (s, _) = string def_attr s
+        onlyStr  True  (s, _) = string sel_attr s
+
+        withNstr       (s, n) = '[' : show n ++ "] " ++ s
+        withN    False i      = string def_attr $ withNstr i
+        withN    True  i      = string sel_attr $ withNstr i
+
 
 withVty :: (Vty -> IO a) -> IO a
 withVty = bracket mkVty shutdown
@@ -53,8 +73,6 @@ fromInt :: Num a => Int -> a
 fromInt = fromInteger.toInteger
 
 data Result = Chosen String | Aborted | PrevMode String | NextMode String
-
-data Mode = Freq | Recent | Favorites deriving (Eq,Show,Read)
 
 maxPrefix :: Eq a => [[a]] -> [a] -> [a]
 maxPrefix [] p = p
@@ -65,8 +83,8 @@ maxPrefix ps p
     where
         next = p ++ [head ps !! length p]
 
-select :: Vty -> Int -> [(String, Int)] -> String -> Int -> Int -> String -> IO Result
-select vty height ls' prefix top curr word = do
+select :: Vty -> Int -> [Item] -> ShowFunc -> String -> Int -> Int -> String -> IO Result
+select vty height ls' showFunc prefix top curr word = do
     update vty (pic_for_image . vert_cat $ status ++ items ++ fin) { pic_cursor = cursor }
     e <- next_event vty
     case e of
@@ -83,20 +101,23 @@ select vty height ls' prefix top curr word = do
         EvKey KDown         []      -> down
         EvKey KUp           []      -> up
         EvKey KHome         []      -> home
+        EvKey KEnd          []      -> end
+        EvKey KPageUp       []      -> pgup
+        EvKey KPageDown     []      -> pgdn
         EvKey (KASCII ch)   []      -> reduce ch
         EvKey KBS           []      -> enhance
         EvKey KEnter        []      -> choose
-        EvResize _ height'          -> select vty height' ls' prefix top curr word
+        EvResize _ height'          -> select vty height' ls' showFunc prefix top curr word
         _                           -> same
     where
 
-        again                                   = select vty height ls' prefix
+        again                                   = select vty height ls' showFunc prefix
 
         same                                    = again top curr word
 
         quit                                    = return Aborted
 
-        ls                                      = map head . group $ filter (isPrefixOf word . fst) ls'
+        ls                                      = nubBy ((==) `on` fst) $ filter (isPrefixOf word . fst) ls'
 
         cursor                                  = Cursor (fromInt $ length word + length prefix + 1) 0
 
@@ -122,6 +143,10 @@ select vty height ls' prefix top curr word = do
 
         home                                    = again 0 0 word
 
+        end
+          | null ls                             = same
+          | otherwise                           = let y' = max (length ls - height + 1) 0 in again y' (length ls - 1) word
+
         up
           | top == 0 && curr == 0               = same
           | top == curr                         = again (top - 1) (curr - 1) word
@@ -132,12 +157,13 @@ select vty height ls' prefix top curr word = do
           | (top + height - 1) == (curr + 1 )   = again (top + 1) (curr + 1) word
           | otherwise                           = again top (curr + 1) word
 
-        mkLine n
-            | n == curr                         = string sel_attr $ txt $ ls !! n
-            | otherwise                         = string def_attr $ txt $ ls !! n
-            where
-                txt = fst
-                sel_attr = def_attr `with_style` standout
+        pgup                                    = let y' = max (top - height) 0 in again y' y' word
+
+        pgdn
+          | top + height >= length ls           = end
+          | otherwise                           = let y' = min (top + height) (length ls - height) in again y' y' word
+
+        mkLine n                                = showFunc (n == curr) $ ls !! n
 
 fileLines :: String -> IO [String]
 fileLines fn = catch go handler
@@ -164,19 +190,20 @@ play word cfg = do
     ls <- fileLines fn
     r <- withVty $ \vty -> do
         height <- vtyHeight vty
-        select vty height (func ls) title 0 0 word
+        select vty height (func ls) showFunc title 0 0 word
     case r of
         Aborted -> exitWith $ ExitFailure 1
         Chosen s -> write s >> saveConfig cfg
         NextMode s -> play s $ cfg { mode = next }
         PrevMode s -> play s $ cfg { mode = prev }
     where
-        b     = fromJust $ lookup (mode cfg) modes
-        next  = mbNext b
-        prev  = mbPrev b
-        title = mbTitle b
-        fn    = mbFn b cfg
-        func  = mbFunc b . filter (not . null)
+        b           = fromJust $ lookup (mode cfg) modes
+        next        = mbNext b
+        prev        = mbPrev b
+        title       = mbTitle b
+        fn          = mbFn b cfg
+        showFunc    = mbShow b
+        func        = mbFunc b . filter (not . null)
 
 main :: IO ()
 main = do
