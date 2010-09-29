@@ -3,9 +3,10 @@
 import Graphics.Vty
 import Control.Exception(bracket)
 import System.Exit(ExitCode(..), exitWith)
-import System.IO(withFile, openFile, IOMode(ReadMode,WriteMode), hGetContents, hGetLine, hPutStrLn )
+import System.IO(withFile, IOMode(ReadMode,WriteMode,AppendMode), hGetLine, hPutStrLn, hPutStr)
+import qualified System.IO.Strict as Strict
 import System.Environment(getEnv, getArgs)
-import Data.List(group, nubBy, sort, sortBy, isPrefixOf)
+import Data.List(group, nubBy, sort, sortBy, isPrefixOf, delete)
 import Data.Ord(comparing)
 import Data.Maybe(fromJust)
 import Data.Function(on)
@@ -22,8 +23,7 @@ getHome = getEnv "HOME"
 loadConfig :: IO Config
 loadConfig = do
     home <- getHome
-    let rcFile = home ++ "/.hhrc"
-    catch (load rcFile) $ def home
+    let rcFile = home ++ "/.hhrc" in catch (load rcFile) $ def home
         where
             load fn = fmap read (withFile fn ReadMode hGetLine) :: IO Config
             def h _ = return $ Config Freq (h ++ "/.bash_history") (h ++ "/.hh_favorites")
@@ -38,7 +38,7 @@ type Item = (String, Int)
 type FilterFunc = [String] -> [Item]
 type ShowFunc = Bool -> Item -> Image
 
-data Mode = Freq | Recent | Favorites deriving (Eq,Show,Read)
+data Mode = Freq | Recent | Favorites deriving (Eq, Show, Read)
 
 data Behaviour = Behaviour {
     mbPrev      :: Mode,
@@ -72,7 +72,7 @@ withVty = bracket mkVty shutdown
 fromInt :: Num a => Int -> a
 fromInt = fromInteger.toInteger
 
-data Result = Chosen String | Aborted | PrevMode String | NextMode String
+data Result = Chosen String | Aborted | PrevMode String | NextMode String | Refresh SelectState
 
 maxPrefix :: Eq a => [[a]] -> [a] -> [a]
 maxPrefix [] p = p
@@ -83,8 +83,10 @@ maxPrefix ps p
     where
         next = p ++ [head ps !! length p]
 
-select :: Vty -> Int -> [Item] -> ShowFunc -> String -> Int -> Int -> String -> IO Result
-select vty height ls' showFunc prefix top curr word = do
+type SelectState = (Int, Int, String)
+
+select :: Vty -> Config -> Int -> [Item] -> ShowFunc -> String -> SelectState -> IO Result
+select vty cfg height ls' showFunc prefix state@(top, curr, word) = do
     update vty (pic_for_image . vert_cat $ status ++ items ++ fin) { pic_cursor = cursor }
     e <- next_event vty
     case e of
@@ -93,9 +95,11 @@ select vty height ls' showFunc prefix top curr word = do
         EvKey (KASCII 'C')  [MCtrl] -> quit
         EvKey (KASCII 'd')  [MCtrl] -> quit
         EvKey (KASCII 'D')  [MCtrl] -> quit
-        EvKey (KASCII 'u')  [MCtrl] -> again top curr ""
-        EvKey (KASCII 'U')  [MCtrl] -> again top curr ""
+        EvKey (KASCII 'u')  [MCtrl] -> again (top, curr, "")
+        EvKey (KASCII 'U')  [MCtrl] -> again (top, curr, "")
         EvKey (KASCII '\t') []      -> complete
+        EvKey (KASCII 'a')  [MCtrl] -> favAdd
+        EvKey (KASCII 'r')  [MCtrl] -> favRem
         EvKey KRight        []      -> return $ NextMode word
         EvKey KLeft         []      -> return $ PrevMode word
         EvKey KDown         []      -> down
@@ -107,13 +111,15 @@ select vty height ls' showFunc prefix top curr word = do
         EvKey (KASCII ch)   []      -> reduce ch
         EvKey KBS           []      -> enhance
         EvKey KEnter        []      -> choose
-        EvResize _ height'          -> select vty height' ls' showFunc prefix top curr word
+        EvResize _ _                -> reload
         _                           -> same
     where
 
-        again                                   = select vty height ls' showFunc prefix
+        again                                   = select vty cfg height ls' showFunc prefix
 
-        same                                    = again top curr word
+        same                                    = again state
+
+        reload                                  = return $ Refresh state
 
         quit                                    = return Aborted
 
@@ -127,55 +133,70 @@ select vty height ls' showFunc prefix top curr word = do
 
         items                                   = map mkLine [top..min (top + height - 2) (length ls - 1)]
 
-        complete                                = do
-            let mp = maxPrefix (map fst ls) word
-            again 0 0 mp
+        complete                                = let word' = maxPrefix (map fst ls) word
+                                                  in  again (0, 0, word')
 
-        reduce ch                               = again 0 0 $ word ++ [ch]
+        reduce ch                               = again (0, 0, word ++ [ch])
 
         enhance
-          | length word > 0                     = again top curr $ init word
+          | length word > 0                     = again (0, 0, init word)
           | otherwise                           = same
 
         choose
           | curr < length ls                    = return . Chosen $ fst (ls !! curr)
           | otherwise                           = same
 
-        home                                    = again 0 0 word
+        favAdd
+          | null ls                             = same
+          | otherwise                           = do
+                _ <- favRem
+                withFile favFn AppendMode $ flip hPutStrLn (fst $ ls !! curr)
+                reload
+
+        favRem
+          | null ls                             = same
+          | otherwise                           = do
+                ll <- readFileLines favFn
+                withFile favFn WriteMode $ \h ->
+                   let ll' = delete (fst $ ls !! curr) ll
+                   in  hPutStr h $ unlines ll'
+                return $ Refresh (top, 0, word)
+
+        favFn                                   = favoritesFileName cfg
+
+        home                                    = again (0, 0, word)
 
         end
           | null ls                             = same
-          | otherwise                           = let y' = max (length ls - height + 1) 0 in again y' (length ls - 1) word
+          | otherwise                           = let y' = max (length ls - height + 1) 0
+                                                  in  again (y', length ls - 1, word)
 
         up
           | top == 0 && curr == 0               = same
-          | top == curr                         = again (top - 1) (curr - 1) word
-          | otherwise                           = again top (curr - 1) word
+          | top == curr                         = again (top - 1, curr - 1, word)
+          | otherwise                           = again (top,     curr - 1, word)
 
         down
           | (curr + 1) >= length ls             = same
-          | (top + height - 1) == (curr + 1 )   = again (top + 1) (curr + 1) word
-          | otherwise                           = again top (curr + 1) word
+          | (top + height - 1) == (curr + 1 )   = again (top + 1, curr + 1, word)
+          | otherwise                           = again (top,     curr + 1, word)
 
-        pgup                                    = let y' = max (top - height) 0 in again y' y' word
+        pgup                                    = let y' = max (top - height) 0
+                                                  in  again (y',  y', word)
 
         pgdn
           | top + height >= length ls           = end
-          | otherwise                           = let y' = min (top + height) (length ls - height) in again y' y' word
+          | otherwise                           = let y' = min (top + height) (length ls - height)
+                                                  in  again (y', y', word)
 
         mkLine n                                = showFunc (n == curr) $ ls !! n
 
-fileLines :: String -> IO [String]
-fileLines fn = catch go handler
-    where
-        go = fmap lines $ openFile fn ReadMode >>= hGetContents
-        handler _ = return []
-
-write :: String -> IO ()
-write = withFile "/tmp/.hh.tmp" WriteMode . flip hPutStrLn
+readFileLines :: String -> IO [String]
+readFileLines = fmap lines . Strict.readFile
 
 histogram :: FilterFunc
-histogram as = let mk a = (head a, length a) in map mk (group $ sort as)
+histogram as = let mk a = (head a, length a)
+               in  map mk (group $ sort as)
 
 freqSort :: FilterFunc
 freqSort = sortBy (comparing snd) . histogram
@@ -185,17 +206,18 @@ vtyHeight vty = do
     bounds <- display_bounds $ terminal vty
     return $ fromInteger( toInteger $ region_height bounds ) :: IO Int
 
-play :: String -> Config -> IO ()
-play word cfg = do
-    ls <- fileLines fn
+play :: SelectState -> Config -> IO ()
+play state cfg = do
+    ls <- readFileLines fn
     r <- withVty $ \vty -> do
         height <- vtyHeight vty
-        select vty height (func ls) showFunc title 0 0 word
+        select vty cfg height (func ls) showFunc title state
     case r of
-        Aborted -> exitWith $ ExitFailure 1
-        Chosen s -> write s >> saveConfig cfg
-        NextMode s -> play s $ cfg { mode = next }
-        PrevMode s -> play s $ cfg { mode = prev }
+        Aborted                     -> exitWith $ ExitFailure 1
+        Chosen   cmd                -> writeFile "/tmp/.hh.tmp" (cmd ++ "\n") >> saveConfig cfg
+        NextMode word'              -> play (0, 0, word') $ cfg { mode = next }
+        PrevMode word'              -> play (0, 0, word') $ cfg { mode = prev }
+        Refresh  state'             -> play state' cfg
     where
         b           = fromJust $ lookup (mode cfg) modes
         next        = mbNext b
@@ -209,5 +231,5 @@ main :: IO ()
 main = do
     word <- fmap unwords getArgs
     cfg <- loadConfig
-    play word cfg
+    play (0, 0, word) cfg
 
