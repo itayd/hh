@@ -1,7 +1,7 @@
 h() {
     local rc=0
     local args=$*
-    [[ $args == \! ]] && args=""
+    [[ $args == "|" ]] && args=""
     if hh $args; then
         local what=`cat ~/.hh.last | head -n 1`
         rm -f /tmp/.hh.tmp
