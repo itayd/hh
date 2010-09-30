@@ -9,7 +9,6 @@ h() {
         eval $what
         local rc=$?
     fi
-    rm -f /tmp/.hh.tmp
     return $rc
 }
 
