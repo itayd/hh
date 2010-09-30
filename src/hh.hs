@@ -6,22 +6,27 @@ import System.Exit(ExitCode(..), exitWith)
 import System.IO(withFile, IOMode(ReadMode,WriteMode,AppendMode), hGetLine, hPutStrLn, hPutStr)
 import System.Environment(getEnv, getArgs)
 import System.Directory(doesFileExist)
-import Data.List(group, nubBy, sort, sortBy, isPrefixOf, delete)
+import Data.List(group, nubBy, sort, sortBy, isPrefixOf, delete, intersect)
 import Data.Ord(comparing)
 import Data.Maybe(fromJust)
 import Data.Function(on)
 import Text.Printf(printf)
+import System.Console.GetOpt
+import Control.Monad(forM_, unless)
 
 import qualified System.IO.Strict as Strict
+
+version :: String
+version = "0.0.1"
 
 atHome :: FilePath -> (FilePath -> FilePath)
 atHome = printf . ("%s/" ++)
 
 defOutputFile, defHistFileName, defFavFileName, rcFileName :: FilePath -> FilePath
-rcFileName = atHome ".hhrc"
-defFavFileName = atHome ".hh_favorites"
+rcFileName      = atHome ".hhrc"
+defFavFileName  = atHome ".hh_favorites"
 defHistFileName = atHome ".bash_history"
-defOutputFile = atHome ".hh.last"
+defOutputFile   = atHome ".hh.last"
 
 data Config = Config {
     currMode            :: Mode,
@@ -231,7 +236,7 @@ vtyHeight vty = do
     bounds <- display_bounds $ terminal vty
     return $ fromInteger( toInteger $ region_height bounds ) :: IO Int
 
-play :: SelectState -> Config -> IO ()
+play :: SelectState -> Config -> IO Config
 play state cfg = do
     ls <- readFileLines fn
     r <- withVty $ \vty -> do
@@ -239,7 +244,7 @@ play state cfg = do
         select vty cfg height (func ls) showFunc title state
     case r of
         Aborted                     -> exitWith $ ExitFailure 1
-        Chosen   cmd                -> writeFile (outputFileName cfg) (cmd ++ "\n") >> saveConfig cfg
+        Chosen   cmd                -> writeFile (outputFileName cfg) (cmd ++ "\n") >> return cfg
         NextMode word'              -> play (0, 0, word') $ cfg { currMode = next }
         PrevMode word'              -> play (0, 0, word') $ cfg { currMode = prev }
         Refresh  state'             -> play state' cfg
@@ -252,9 +257,33 @@ play state cfg = do
         showFunc    = mbShow b
         func        = mbFunc b . filter (not . null)
 
+data OptFlag = Version | Help | DontSaveConfig | Init deriving (Eq)
+
+options :: [OptDescr OptFlag]
+options = [ Option "v"     ["version"]      (NoArg Version)         "show version number",
+            Option "h?"    ["help"]         (NoArg Help)            "show help",
+            Option "n"     ["no-save-cfg"]  (NoArg DontSaveConfig)  "do not save configuration on exit",
+            Option "i"     ["init"]         (NoArg Init)            "create default rc file if non exists" ]
+
+header :: String
+header  = "Usage: hh [opts...] words"
+
+parseArgs :: [String] -> IO (String, [OptFlag])
+parseArgs args = case getOpt Permute options args of
+        (flags ,n, [])      -> return ( unwords n, flags )
+        (_,     _, errs)    -> ioError $ userError (concat errs ++ usageInfo header options)
+
+handleOpt :: OptFlag -> IO ()
+handleOpt Version   = putStrLn version
+handleOpt Help      = putStrLn $ usageInfo header options
+handleOpt Init      = loadConfig >>= saveConfig
+handleOpt _         = undefined
+
 main :: IO ()
 main = do
-    word <- fmap unwords getArgs
-    cfg <- loadConfig
-    play (0, 0, word) cfg
+    ( word, opts ) <- getArgs >>= parseArgs
+    let showStoppers = intersect [Version, Help, Init] opts
+    if not . null $ showStoppers
+        then forM_ opts handleOpt
+        else loadConfig >>= play (0, 0, word ) >>= unless (DontSaveConfig `elem` opts) . saveConfig
 
