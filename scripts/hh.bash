@@ -1,7 +1,7 @@
 h() {
     rc=0
     if hh $*; then
-        local what=`cat /tmp/.hh.tmp | head -n 1`
+        local what=`cat ~/.hh.last | head -n 1`
         rm -f /tmp/.hh.tmp
         echo $what
         eval $what
