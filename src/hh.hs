@@ -4,45 +4,66 @@ import Graphics.Vty
 import Control.Exception(bracket)
 import System.Exit(ExitCode(..), exitWith)
 import System.IO(withFile, IOMode(ReadMode,WriteMode,AppendMode), hGetLine, hPutStrLn, hPutStr)
-import qualified System.IO.Strict as Strict
 import System.Environment(getEnv, getArgs)
+import System.Directory(doesFileExist)
 import Data.List(group, nubBy, sort, sortBy, isPrefixOf, delete)
 import Data.Ord(comparing)
 import Data.Maybe(fromJust)
 import Data.Function(on)
+import Text.Printf(printf)
+
+import qualified System.IO.Strict as Strict
+
+atHome :: FilePath -> (FilePath -> FilePath)
+atHome = printf . ("%s/" ++)
+
+defOutputFile, defHistFileName, defFavFileName, rcFileName :: FilePath -> FilePath
+rcFileName = atHome ".hhrc"
+defFavFileName = atHome ".hh_favorites"
+defHistFileName = atHome ".bash_history"
+defOutputFile = atHome ".hh.last"
 
 data Config = Config {
-    mode                :: Mode,
-    historyFileName     :: String,
-    favoritesFileName   :: String
+    currMode            :: Mode,
+    historyFileName     :: FilePath,
+    favoritesFileName   :: FilePath,
+    outputFileName      :: FilePath
 } deriving (Show,Read)
 
-getHome :: IO String
+getHome :: IO FilePath
 getHome = getEnv "HOME"
 
 loadConfig :: IO Config
 loadConfig = do
     home <- getHome
-    let rcFile = home ++ "/.hhrc" in catch (load rcFile) $ def home
+    let rcFile = rcFileName home in catch (load rcFile) $ def home
         where
             load fn = fmap read (withFile fn ReadMode hGetLine) :: IO Config
-            def h _ = return $ Config Freq (h ++ "/.bash_history") (h ++ "/.hh_favorites")
+            def h _ = return $ Config Freq (defHistFileName h) (defFavFileName h) (defOutputFile h)
 
 saveConfig :: Config -> IO ()
 saveConfig cfg = do
     home <- getHome
-    withFile (home ++ "/.hhrc" ) WriteMode $ flip hPutStrLn (show cfg)
+    withFile (rcFileName home) WriteMode $ flip hPutStrLn (show cfg)
 
 type Item = (String, Int)
 
 type FilterFunc = [String] -> [Item]
 type ShowFunc = Bool -> Item -> Image
 
-data Mode = Freq | Recent | Favorites deriving (Eq, Show, Read)
+data Mode = Freq | Recent | Favorites deriving (Eq, Show, Read, Bounded, Enum)
+
+nextMode :: Mode -> Mode
+nextMode m
+    | m == maxBound = m
+    | otherwise     = succ m
+
+prevMode :: Mode -> Mode
+prevMode m
+    | m == minBound = m
+    | otherwise     = pred m
 
 data Behaviour = Behaviour {
-    mbPrev      :: Mode,
-    mbNext      :: Mode,
     mbTitle     :: String,
     mbFn        :: Config -> String,
     mbFunc      :: FilterFunc,
@@ -50,9 +71,9 @@ data Behaviour = Behaviour {
 }
 
 modes :: [(Mode,Behaviour)]
-modes = [(Freq,      Behaviour Favorites  Recent    "F" historyFileName   (reverse . freqSort) onlyStr  ),
-         (Recent,    Behaviour Freq       Favorites "R" historyFileName   (reverse . same)     withN    ),
-         (Favorites, Behaviour Recent     Freq      "*" favoritesFileName (reverse . same)     onlyStr  )]
+modes = [(Freq,      Behaviour "freq"      historyFileName   (reverse . freqSort) onlyStr  ),
+         (Recent,    Behaviour "recent"    historyFileName   (reverse . same)     withN    ),
+         (Favorites, Behaviour "favs"      favoritesFileName (reverse . same)     onlyStr  )]
     where
         same                  = flip zip [1..]
 
@@ -127,7 +148,7 @@ select vty cfg height ls' showFunc prefix state@(top, curr, word) = do
 
         cursor                                  = Cursor (fromInt $ length word + length prefix + 1) 0
 
-        status                                  = [string def_attr $ prefix ++ '>' : word ]
+        status                                  = [string def_attr (prefix ++ ">") <|> string (def_attr `with_style` bold) word]
 
         fin                                     = [string def_attr " "]
 
@@ -191,8 +212,12 @@ select vty cfg height ls' showFunc prefix state@(top, curr, word) = do
 
         mkLine n                                = showFunc (n == curr) $ ls !! n
 
-readFileLines :: String -> IO [String]
-readFileLines = fmap lines . Strict.readFile
+readFileLines :: FilePath -> IO [String]
+readFileLines fn = do
+    e <- doesFileExist fn
+    if e
+      then fmap lines $ Strict.readFile fn
+      else return []
 
 histogram :: FilterFunc
 histogram as = let mk a = (head a, length a)
@@ -214,14 +239,14 @@ play state cfg = do
         select vty cfg height (func ls) showFunc title state
     case r of
         Aborted                     -> exitWith $ ExitFailure 1
-        Chosen   cmd                -> writeFile "/tmp/.hh.tmp" (cmd ++ "\n") >> saveConfig cfg
-        NextMode word'              -> play (0, 0, word') $ cfg { mode = next }
-        PrevMode word'              -> play (0, 0, word') $ cfg { mode = prev }
+        Chosen   cmd                -> writeFile (outputFileName cfg) (cmd ++ "\n") >> saveConfig cfg
+        NextMode word'              -> play (0, 0, word') $ cfg { currMode = next }
+        PrevMode word'              -> play (0, 0, word') $ cfg { currMode = prev }
         Refresh  state'             -> play state' cfg
     where
-        b           = fromJust $ lookup (mode cfg) modes
-        next        = mbNext b
-        prev        = mbPrev b
+        b           = fromJust $ lookup (currMode cfg) modes
+        next        = nextMode $ currMode cfg
+        prev        = prevMode $ currMode cfg
         title       = mbTitle b
         fn          = mbFn b cfg
         showFunc    = mbShow b
