@@ -6,7 +6,7 @@ import System.Exit(ExitCode(..), exitWith)
 import System.IO(withFile, IOMode(ReadMode,WriteMode,AppendMode), hGetLine, hPutStrLn, hPutStr)
 import System.Environment(getEnv, getArgs)
 import System.Directory(doesFileExist)
-import Data.List(group, nubBy, sort, sortBy, isPrefixOf, delete, intersect)
+import Data.List(group, nubBy, sort, sortBy, isPrefixOf, delete, intersect, find)
 import Data.Ord(comparing)
 import Data.Maybe(fromJust)
 import Data.Function(on)
@@ -17,7 +17,7 @@ import Control.Monad(forM_, unless)
 import qualified System.IO.Strict as Strict
 
 version :: String
-version = "0.0.1"
+version = "0.2"
 
 atHome :: FilePath -> (FilePath -> FilePath)
 atHome = printf . ("%s/" ++)
@@ -54,7 +54,8 @@ saveConfig cfg = do
 type Item = (String, Int)
 
 type FilterFunc = [String] -> [Item]
-type ShowFunc = Bool -> Item -> Image
+type ShowFunc = Bool -> Bool -> Item -> Image
+type IsFavFunc = String -> Bool
 
 data Mode = Favorites | Freq | Recent deriving (Eq, Show, Read, Bounded, Enum)
 
@@ -77,20 +78,19 @@ data Behaviour = Behaviour {
 
 modes :: [(Mode,Behaviour)]
 modes = [(Freq,      Behaviour "freq"      historyFileName   (reverse . freqSort) onlyStr  ),
-         (Recent,    Behaviour "recent"    historyFileName   (reverse . same)     withN    ),
+         (Recent,    Behaviour "recent"    historyFileName   (reverse . same)     onlyStr  ),
          (Favorites, Behaviour "favs"      favoritesFileName (reverse . same)     onlyStr  )]
     where
         same                  = flip zip [1..]
 
         sel_attr              = def_attr `with_style` standout
+        fav_attr              = def_attr `with_style` bold
+        fav_sel_attr          = sel_attr `with_style` bold
 
-        onlyStr  False (s, _) = string def_attr s
-        onlyStr  True  (s, _) = string sel_attr s
-
-        withNstr       (s, n) = '[' : show n ++ "] " ++ s
-        withN    False i      = string def_attr $ withNstr i
-        withN    True  i      = string sel_attr $ withNstr i
-
+        onlyStr  False False = string def_attr      . fst
+        onlyStr  True  False = string fav_attr      . fst
+        onlyStr  False True  = string sel_attr      . fst
+        onlyStr  True  True  = string fav_sel_attr  . fst
 
 withVty :: (Vty -> IO a) -> IO a
 withVty = bracket mkVty shutdown
@@ -111,8 +111,8 @@ maxPrefix ps p
 
 type SelectState = (Int, Int, String)
 
-select :: Vty -> Config -> Int -> [Item] -> ShowFunc -> String -> SelectState -> IO Result
-select vty cfg height ls' showFunc prefix state@(top, curr, word) = do
+select :: Vty -> Config -> Int -> [Item] -> IsFavFunc -> ShowFunc -> String -> SelectState -> IO Result
+select    vty    cfg       height ls'       isFav        showFunc    prefix    state@(top, curr, word) = do
     update vty (pic_for_image . vert_cat $ status ++ items ++ fin) { pic_cursor = cursor }
     e <- next_event vty
     case e of
@@ -130,6 +130,8 @@ select vty cfg height ls' showFunc prefix state@(top, curr, word) = do
         EvKey KLeft         []      -> return $ PrevMode word
         EvKey KDown         []      -> down
         EvKey KUp           []      -> up
+        EvKey KUp           [MCtrl] -> prevFav
+        EvKey KDown         [MCtrl] -> nextFav
         EvKey KHome         []      -> home
         EvKey KEnd          []      -> end
         EvKey KPageUp       []      -> pgup
@@ -141,7 +143,7 @@ select vty cfg height ls' showFunc prefix state@(top, curr, word) = do
         _                           -> same
     where
 
-        again                                   = select vty cfg height ls' showFunc prefix
+        again                                   = select vty cfg height ls' isFav showFunc prefix
 
         same                                    = again state
 
@@ -186,7 +188,7 @@ select vty cfg height ls' showFunc prefix state@(top, curr, word) = do
                 withFile favFn WriteMode $ \h ->
                    let ll' = delete (fst $ ls !! curr) ll
                    in  hPutStr h $ unlines ll'
-                return $ Refresh (top, 0, word)
+                return $ Refresh (top, min curr (max 0 $ length ls - 2), word)
 
         favFn                                   = favoritesFileName cfg
 
@@ -206,15 +208,27 @@ select vty cfg height ls' showFunc prefix state@(top, curr, word) = do
           | (top + height - 1) == (curr + 1 )   = again (top + 1, curr + 1, word)
           | otherwise                           = again (top,     curr + 1, word)
 
-        pgup                                    = let y' = max (top - height) 0
+        pgup                                    = let y' = max (top - height) 0 -- can't use jumpTo, always stick to the top
                                                   in  again (y',  y', word)
 
-        pgdn
-          | top + height >= length ls           = end
-          | otherwise                           = let y' = min (top + height) (length ls - height)
-                                                  in  again (y', y', word)
+        pgdn                                    = jumpTo $ top + height
 
-        mkLine n                                = showFunc (n == curr) $ ls !! n
+        indexedFavs                             = filter (isFav . snd) (zip [0..] $ map fst ls)
+        gotoFav Nothing                         = same
+        gotoFav (Just (curr',_))                = jumpTo curr'
+        nextFav                                 = gotoFav $ find ((curr <) . fst) indexedFavs
+        prevFav                                 = gotoFav $ find ((curr >) . fst) (reverse indexedFavs)
+
+        mkLine n                                = let which = ls !! n
+                                                  in  showFunc (isFav $ fst which) (n == curr) which
+
+        jumpTo curr'
+            | curr'' < top                      = next $ max 0 (curr'' - height + 2)
+            | curr'' > top + height - 2         = next $ min (length ls - height + 1) curr''
+            | otherwise                         = next top
+            where
+                curr''                          = min (max curr' 0) (length ls - 1)
+                next top'                       = again (top', curr'', word)
 
 readFileLines :: FilePath -> IO [String]
 readFileLines fn = do
@@ -237,10 +251,11 @@ vtyHeight vty = do
 
 play :: SelectState -> Config -> IO Config
 play state cfg = do
+    favs <- readFileLines (favoritesFileName cfg)
     ls <- readFileLines fn
     r <- withVty $ \vty -> do
         height <- vtyHeight vty
-        select vty cfg height (func ls) showFunc title state
+        select vty cfg height (func ls) (flip elem favs) showFunc title state
     case r of
         Aborted                     -> exitWith $ ExitFailure 1
         Chosen   cmd                -> writeFile (outputFileName cfg) (cmd ++ "\n") >> return cfg
@@ -248,13 +263,13 @@ play state cfg = do
         PrevMode word'              -> play (0, 0, word') $ cfg { currMode = prev }
         Refresh  state'             -> play state' cfg
     where
-        b           = fromJust $ lookup (currMode cfg) modes
-        next        = nextMode $ currMode cfg
-        prev        = prevMode $ currMode cfg
-        title       = mbTitle b
-        fn          = mbFn b cfg
-        showFunc    = mbShow b
-        func        = mbFunc b . filter (not . null)
+        b                            = fromJust $ lookup (currMode cfg) modes
+        next                         = nextMode $ currMode cfg
+        prev                         = prevMode $ currMode cfg
+        title                        = mbTitle b
+        fn                           = mbFn b cfg
+        showFunc                     = mbShow b
+        func                         = mbFunc b . filter (not . null)
 
 data OptFlag = Version | Help | DontSaveConfig | Init deriving (Eq)
 
