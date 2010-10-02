@@ -56,7 +56,7 @@ type Item = (String, Int)
 type FilterFunc = [String] -> [Item]
 type ShowFunc = Bool -> Item -> Image
 
-data Mode = Freq | Recent | Favorites deriving (Eq, Show, Read, Bounded, Enum)
+data Mode = Favorites | Freq | Recent deriving (Eq, Show, Read, Bounded, Enum)
 
 nextMode :: Mode -> Mode
 nextMode m
