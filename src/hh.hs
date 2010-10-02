@@ -196,7 +196,6 @@ select vty cfg height ls' showFunc prefix state@(top, curr, word) = do
           | null ls                             = same
           | otherwise                           = let y' = max (length ls - height + 1) 0
                                                   in  again (y', length ls - 1, word)
-
         up
           | top == 0 && curr == 0               = same
           | top == curr                         = again (top - 1, curr - 1, word)
@@ -285,5 +284,5 @@ main = do
     let showStoppers = intersect [Version, Help, Init] opts
     if not . null $ showStoppers
         then forM_ opts handleOpt
-        else loadConfig >>= play (0, 0, word ) >>= unless (DontSaveConfig `elem` opts) . saveConfig
+        else loadConfig >>= play (0, 0, word) >>= unless (DontSaveConfig `elem` opts) . saveConfig
 
