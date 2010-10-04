@@ -111,11 +111,36 @@ maxPrefix ps p
 
 type SelectState = (Int, Int, String)
 
-select :: Vty -> Config -> Int -> [Item] -> IsFavFunc -> ShowFunc -> String -> SelectState -> IO Result
-select    vty    cfg       height ls'       isFav        showFunc    prefix    state@(top, curr, word) = do
+helpScreen :: Vty -> (Int, Int) -> IO ()
+helpScreen vty bounds@(_, height) = do
+    update vty $ pic_for_image . vert_cat $ map (string def_attr) $ text ++ replicate (height - length text - 1) " " ++ ["hh " ++ version ++ ", q/Esc/Enter to resume" ]
+    next_event vty >>= \e -> case e of
+        EvKey (KASCII 'q') []   -> return ()
+        EvKey KEsc       []     -> return ()
+        EvKey KEnter     []     -> return ()
+        _                       -> helpScreen vty bounds
+    where
+        text = [ "Down              - next line",
+                 "Up                - previous line",
+                 "Enter             - select line",
+                 "C-Down            - next favorited line",
+                 "C-Up              - previous favorited line",
+                 "Home              - first line",
+                 "End               - last line",
+                 "Left              - previous mode",
+                 "Right             - next mode",
+                 "C-u               - clear line",
+                 "C-a               - add to favorites",
+                 "C-r               - remove from favorites",
+                 "C-c, C-d, q, Esc  - abort",
+                 "Tab               - complete" ]
+
+select :: Vty -> Config -> (Int, Int) ->      [Item] -> IsFavFunc -> ShowFunc -> String -> SelectState -> IO Result
+select    vty    cfg       bounds@(width, height) ls'       isFav        showFunc    prefix    state@(top, curr, word) = do
     update vty (pic_for_image . vert_cat $ status ++ items ++ fin) { pic_cursor = cursor }
     e <- next_event vty
     case e of
+        EvKey (KASCII 'h')  [MCtrl] -> help
         EvKey KEsc []               -> quit
         EvKey (KASCII 'c')  [MCtrl] -> quit
         EvKey (KASCII 'C')  [MCtrl] -> quit
@@ -143,7 +168,7 @@ select    vty    cfg       height ls'       isFav        showFunc    prefix    s
         _                           -> same
     where
 
-        again                                   = select vty cfg height ls' isFav showFunc prefix
+        again                                   = select vty cfg bounds ls' isFav showFunc prefix
 
         same                                    = again state
 
@@ -151,11 +176,16 @@ select    vty    cfg       height ls'       isFav        showFunc    prefix    s
 
         quit                                    = return Aborted
 
+        help                                    = helpScreen vty bounds >> same
+
         ls                                      = nubBy ((==) `on` fst) $ filter (isPrefixOf word . fst) ls'
 
         cursor                                  = Cursor (fromInt $ length word + length prefix + 1) 0
 
-        status                                  = [string def_attr (prefix ++ ">") <|> string (def_attr `with_style` bold) word]
+        status                                  = [string def_attr (prefix ++ ">") <|> string (def_attr `with_style` bold) word <|> hint ]
+            where
+                hint                            = string def_attr $ replicate (width - 1 - sum (map length [text, word, prefix]) ) ' ' ++ text
+                text                            = "C-H: Help"
 
         fin                                     = [string def_attr " "]
 
@@ -244,18 +274,18 @@ histogram as = let mk a = (head a, length a)
 freqSort :: FilterFunc
 freqSort = sortBy (comparing snd) . histogram
 
-vtyHeight :: Vty -> IO Int
-vtyHeight vty = do
+vtyBounds :: Vty -> IO (Int, Int)
+vtyBounds vty = do
     bounds <- display_bounds $ terminal vty
-    return $ fromInteger( toInteger $ region_height bounds ) :: IO Int
+    return (fromInteger( toInteger $ region_width bounds), fromInteger( toInteger $ region_height bounds )) :: IO (Int, Int)
 
 play :: SelectState -> Config -> IO Config
 play state cfg = do
     favs <- readFileLines (favoritesFileName cfg)
     ls <- readFileLines fn
     r <- withVty $ \vty -> do
-        height <- vtyHeight vty
-        select vty cfg height (func ls) (flip elem favs) showFunc title state
+        bounds <- vtyBounds vty
+        select vty cfg bounds (func ls) (flip elem favs) showFunc title state
     case r of
         Aborted                     -> exitWith $ ExitFailure 1
         Chosen   cmd                -> writeFile (outputFileName cfg) (cmd ++ "\n") >> return cfg
