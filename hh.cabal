@@ -2,7 +2,7 @@ Name:                hh
 Version:             0.2
 Synopsis:            history tui
 Homepage:            http://itay.bazoo.org/projects/hh
-License:             GPL
+License:             BSD3
 License-file:        LICENSE
 Author:              Itay Donenhirsch
 Maintainer:          itay@bazoo.org
