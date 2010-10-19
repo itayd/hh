@@ -1,6 +1,6 @@
 Name:                hh
-Version:             0.2
-Synopsis:            history tui
+Version:             0.0.3
+Synopsis:            shell history browser
 Homepage:            http://itay.bazoo.org/projects/hh
 License:             BSD3
 License-file:        LICENSE
@@ -9,6 +9,7 @@ Maintainer:          itay@bazoo.org
 Category:            Utility
 Build-type:          Simple
 Cabal-version:       >=1.2
+Extra-Source-Files:  scripts/hh.bash scripts/.inputrc README
 
 Executable hh
   Main-is:          hh.hs
