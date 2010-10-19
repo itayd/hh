@@ -3,13 +3,15 @@ h() {
     local args=$*
     local opts=""
     [[ -r ~/.hhopts ]] && opts=`cat ~/.hhopts`
-    if hh $opts -- $args; then
+    history > /tmp/$$
+    if hh -f/tmp/$$ $opts -- $args; then
         local what=`cat ~/.hh.last | head -n 1`
         rm -f /tmp/.hh.last
         echo $what
         eval $what
         rc=$?
     fi
+    rm -f /tmp/$$
     return $rc
 }
 

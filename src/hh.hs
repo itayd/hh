@@ -45,6 +45,9 @@ withFile' path iom f = expandFileName path >>= \n -> withFile n iom f
 readFile' :: FilePath -> IO String
 readFile' path = expandFileName path >>= \n -> Strict.readFile n
 
+writeFile' :: FilePath -> String -> IO ()
+writeFile' path what = expandFileName path >>= flip writeFile what
+
 doesFileExist' :: FilePath -> IO Bool
 doesFileExist' path = expandFileName path >>= doesFileExist
 
@@ -294,7 +297,7 @@ play state cfg = do
         select vty cfg bounds (func ls) (`elem` favs) showFunc title state
     case r of
         Aborted                     -> exitWith $ ExitFailure 1
-        Chosen   cmd                -> writeFile (outputFileName cfg) (cmd ++ "\n") >> return cfg
+        Chosen   cmd                -> writeFile' (outputFileName cfg) (cmd ++ "\n") >> return cfg
         NextMode word'              -> play (0, 0, word') $ cfg { currMode = next }
         PrevMode word'              -> play (0, 0, word') $ cfg { currMode = prev }
         Refresh  state'             -> play state' cfg
@@ -339,7 +342,6 @@ main = let shouldRun opts = null $ intersect [Version, Help, Init] opts
        in do
             ( word, opts ) <- getArgs >>= parseArgs
             cfg <- (loadConfig >>= flip (foldM handleOpt) opts)
-            print cfg
             cfg' <- if shouldRun opts
                         then play (0, 0, word) cfg
                         else return cfg
