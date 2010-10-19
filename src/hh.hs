@@ -3,53 +3,59 @@
 import Graphics.Vty
 import Control.Exception(bracket)
 import System.Exit(ExitCode(..), exitWith)
-import System.IO(withFile, IOMode(ReadMode,WriteMode,AppendMode), hGetLine, hPutStrLn, hPutStr)
-import System.Environment(getEnv, getArgs)
-import System.Directory(doesFileExist)
-import Data.List(group, nubBy, sort, sortBy, isPrefixOf, delete, intersect, find)
+import System.IO(Handle, withFile, IOMode(ReadMode,WriteMode,AppendMode), hGetLine, hPutStrLn, hPutStr)
+import System.Environment(getArgs)
+import System.Directory(doesFileExist,getHomeDirectory)
+import Data.List(group, nubBy, sort, sortBy, isPrefixOf, delete, find, intersect)
 import Data.Ord(comparing)
 import Data.Maybe(fromJust)
 import Data.Function(on)
-import Text.Printf(printf)
 import System.Console.GetOpt
-import Control.Monad(forM_, unless)
+import Control.Monad(foldM, when)
 
 import qualified System.IO.Strict as Strict
 
 version :: String
-version = "0.2"
+version = "0.0.3"
 
-atHome :: FilePath -> (FilePath -> FilePath)
-atHome = printf . ("%s/" ++)
-
-defOutputFile, defHistFileName, defFavFileName, rcFileName :: FilePath -> FilePath
-rcFileName      = atHome ".hhrc"
-defFavFileName  = atHome ".hh_favorites"
-defHistFileName = atHome ".bash_history"
-defOutputFile   = atHome ".hh.last"
+defOutputFile, defHistFileName, defFavFileName, rcFileName :: FilePath
+rcFileName      = "~/.hhrc"
+defFavFileName  = "~/.hh_favorites"
+defHistFileName = "~/.bash_history"
+defOutputFile   = "~/.hh.last"
 
 data Config = Config {
     currMode            :: Mode,
-    historyFileName     :: FilePath,
+    dataFileName        :: FilePath,
     favoritesFileName   :: FilePath,
-    outputFileName      :: FilePath
+    outputFileName      :: FilePath,
+    saveOnExit          :: Bool
 } deriving (Show,Read)
 
-getHome :: IO FilePath
-getHome = getEnv "HOME"
+atHome :: FilePath -> IO FilePath
+atHome what = fmap (++ what) getHomeDirectory
+
+expandFileName :: FilePath -> IO FilePath
+expandFileName ('~':rest) = atHome rest
+expandFileName path       = return path
+
+withFile' :: FilePath -> IOMode -> (Handle -> IO r) -> IO r
+withFile' path iom f = expandFileName path >>= \n -> withFile n iom f
+
+readFile' :: FilePath -> IO String
+readFile' path = expandFileName path >>= \n -> Strict.readFile n
+
+doesFileExist' :: FilePath -> IO Bool
+doesFileExist' path = expandFileName path >>= doesFileExist
 
 loadConfig :: IO Config
-loadConfig = do
-    home <- getHome
-    let rcFile = rcFileName home in catch (load rcFile) $ def home
+loadConfig = catch load def
         where
-            load fn = fmap read (withFile fn ReadMode hGetLine) :: IO Config
-            def h _ = return $ Config Freq (defHistFileName h) (defFavFileName h) (defOutputFile h)
+            load = fmap read (withFile' rcFileName ReadMode hGetLine) :: IO Config
+            def _ = return $ Config Freq defHistFileName defFavFileName defOutputFile False
 
 saveConfig :: Config -> IO ()
-saveConfig cfg = do
-    home <- getHome
-    withFile (rcFileName home) WriteMode $ flip hPutStrLn (show cfg)
+saveConfig cfg = withFile' rcFileName WriteMode $ flip hPutStrLn (show cfg)
 
 type Item = (String, Int)
 
@@ -77,8 +83,8 @@ data Behaviour = Behaviour {
 }
 
 modes :: [(Mode,Behaviour)]
-modes = [(Freq,      Behaviour "freq"      historyFileName   (reverse . freqSort) onlyStr  ),
-         (Recent,    Behaviour "recent"    historyFileName   (reverse . same)     onlyStr  ),
+modes = [(Freq,      Behaviour "freq"      dataFileName      (reverse . freqSort) onlyStr  ),
+         (Recent,    Behaviour "recent"    dataFileName      (reverse . same)     onlyStr  ),
          (Favorites, Behaviour "favs"      favoritesFileName (reverse . same)     onlyStr  )]
     where
         same                  = flip zip [1..]
@@ -208,14 +214,14 @@ select    vty    cfg       bounds@(width, height) ls'       isFav        showFun
           | null ls                             = same
           | otherwise                           = do
                 _ <- favRem
-                withFile favFn AppendMode $ flip hPutStrLn (fst $ ls !! curr)
+                withFile' favFn AppendMode $ flip hPutStrLn (fst $ ls !! curr)
                 reload
 
         favRem
           | null ls                             = same
           | otherwise                           = do
                 ll <- readFileLines favFn
-                withFile favFn WriteMode $ \h ->
+                withFile' favFn WriteMode $ \h ->
                    let ll' = delete (fst $ ls !! curr) ll
                    in  hPutStr h $ unlines ll'
                 return $ Refresh (top, min curr (max 0 $ length ls - 2), word)
@@ -262,9 +268,9 @@ select    vty    cfg       bounds@(width, height) ls'       isFav        showFun
 
 readFileLines :: FilePath -> IO [String]
 readFileLines fn = do
-    e <- doesFileExist fn
+    e <- doesFileExist' fn
     if e
-      then fmap lines $ Strict.readFile fn
+      then fmap lines $ readFile' fn
       else return []
 
 histogram :: FilterFunc
@@ -285,7 +291,7 @@ play state cfg = do
     ls <- readFileLines fn
     r <- withVty $ \vty -> do
         bounds <- vtyBounds vty
-        select vty cfg bounds (func ls) (flip elem favs) showFunc title state
+        select vty cfg bounds (func ls) (`elem` favs) showFunc title state
     case r of
         Aborted                     -> exitWith $ ExitFailure 1
         Chosen   cmd                -> writeFile (outputFileName cfg) (cmd ++ "\n") >> return cfg
@@ -301,13 +307,17 @@ play state cfg = do
         showFunc                     = mbShow b
         func                         = mbFunc b . filter (not . null)
 
-data OptFlag = Version | Help | DontSaveConfig | Init deriving (Eq)
+data OptFlag = Version | Help | SaveConfig | Init | FromFile FilePath deriving (Eq)
 
 options :: [OptDescr OptFlag]
-options = [ Option "v"     ["version"]      (NoArg Version)         "show version number",
-            Option "h?"    ["help"]         (NoArg Help)            "show help",
-            Option "n"     ["no-save-cfg"]  (NoArg DontSaveConfig)  "do not save configuration on exit",
-            Option "i"     ["init"]         (NoArg Init)            "create default rc file if non exists" ]
+options = [ Option "v"     ["version"]          (NoArg Version)             "show version number",
+            Option "h?"    ["help"]             (NoArg Help)                "show help",
+            Option "s"     ["save-cfg"]         (NoArg SaveConfig)          "save configuration on exit",
+            Option "i"     ["init"]             (NoArg Init)                "create default rc file if non exists",
+            Option "f"     ["from","from-file"] (OptArg fromFile "FILE")    "read history content from FILE" ]
+    where
+        fromFile Nothing   = FromFile defHistFileName
+        fromFile (Just fn) = FromFile fn
 
 header :: String
 header  = "Usage: hh [opts...] words"
@@ -317,17 +327,21 @@ parseArgs args = case getOpt Permute options args of
         (flags ,n, [])      -> return ( unwords n, flags )
         (_,     _, errs)    -> ioError $ userError (concat errs ++ usageInfo header options)
 
-handleOpt :: OptFlag -> IO ()
-handleOpt Version   = putStrLn version
-handleOpt Help      = putStrLn $ usageInfo header options
-handleOpt Init      = loadConfig >>= saveConfig
-handleOpt _         = undefined
+handleOpt :: Config -> OptFlag -> IO Config
+handleOpt cfg Version        = putStrLn version >> return cfg
+handleOpt cfg Help           = putStrLn (usageInfo header options) >> return cfg
+handleOpt cfg Init           = loadConfig >>= saveConfig >> return cfg
+handleOpt cfg (FromFile fn)  = return $ cfg { dataFileName = fn }
+handleOpt cfg SaveConfig     = return $ cfg { saveOnExit = True }
 
 main :: IO ()
-main = do
-    ( word, opts ) <- getArgs >>= parseArgs
-    let showStoppers = intersect [Version, Help, Init] opts
-    if not . null $ showStoppers
-        then forM_ opts handleOpt
-        else loadConfig >>= play (0, 0, word) >>= unless (DontSaveConfig `elem` opts) . saveConfig
+main = let shouldRun opts = null $ intersect [Version, Help, Init] opts
+       in do
+            ( word, opts ) <- getArgs >>= parseArgs
+            cfg <- (loadConfig >>= flip (foldM handleOpt) opts)
+            print cfg
+            cfg' <- if shouldRun opts
+                        then play (0, 0, word) cfg
+                        else return cfg
+            when (saveOnExit cfg') $ saveConfig cfg'
 
