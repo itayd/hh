@@ -3,7 +3,7 @@ h() {
     local args=$*
     local opts=""
     [[ -r ~/.hhopts ]] && opts=`cat ~/.hhopts`
-    history > /tmp/$$
+    history | awk "{print \$2}" > /tmp/$$
     if hh -f/tmp/$$ $opts -- $args; then
         local what=`cat ~/.hh.last | head -n 1`
         rm -f /tmp/.hh.last
