@@ -9,7 +9,7 @@ Maintainer:          itay@bazoo.org
 Category:            Utility
 Build-type:          Simple
 Cabal-version:       >=1.2
-Extra-Source-Files:  scripts/hh.bash scripts/.inputrc README
+Extra-Source-Files:  scripts/hh.bash scripts/.inputrc scripts/hh.zsh README 
 
 Executable hh
   Main-is:          hh.hs
