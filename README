@@ -1,9 +1,17 @@
 Shell History Browser
 
-How to install? (for bash)
+BASH: How to install?
 0. cabal configure && cabal install
 1. cat scripts/.inputrc >> ~/.inputrc
 2. source scripts/hh.bash in .bashrc
 3. add ~/.cabal/bin to path
 4. Restart shell
 5. Press C-H
+
+ZSH: How to install?
+0. cabal configure && cabal install
+2. source scripts/hh.zsh in .zshrc
+3. add ~/.cabal/bin to path
+4. Restart shell
+5. Press C-H [not working just yet]
+
