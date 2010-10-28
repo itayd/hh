@@ -3,7 +3,7 @@ h() {
     local args=$*
     local opts=""
     [[ -r ~/.hhopts ]] && opts=`cat ~/.hhopts`
-    history | sed -e "s/^ *//g" | cut -d\  -f 2- | sed -e "s/^ //g" > /tmp/$$
+    history | sed -e "s/^  *//g" | cut -d\  -f 3- > /tmp/$$
     if hh -f/tmp/$$ $opts -- $args; then
         local what=`cat ~/.hh.last | head -n 1`
         rm -f /tmp/.hh.last
