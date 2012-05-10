@@ -13,5 +13,5 @@ ZSH: How to install?
 2. source scripts/hh.zsh in .zshrc
 3. add ~/.cabal/bin to path
 4. Restart shell
-5. Press C-H [not working just yet]
+5. Press C-H
 
