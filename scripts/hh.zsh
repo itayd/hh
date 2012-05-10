@@ -1,17 +1,17 @@
 h() {
     local rc=0
-    local args=$*
     local opts=""
     [[ -r ~/.hhopts ]] && opts=`cat ~/.hhopts`
-    history | awk "{print \$2}" > /tmp/$$
-    hh -f/tmp/$$ $opts -- $args
+    history 0 -1 | sed -e "s/^ *[0-9]* *//g" > /tmp/$$
+    hh --from=/tmp/$$ $opts -- $BUFFER
     if [[ $? -eq 0 ]]; then
-        what=`cat ~/.hh.last | head -n 1`
+        BUFFER=`cat ~/.hh.last | head -n 1`
         rm -f /tmp/.hh.last
-        print -z $what
-        rc=$?
     fi
     rm -f /tmp/$$
-    return $rc
 }
+
+zle -N h
+
+bindkey "^h" h
 
