@@ -1,7 +1,7 @@
-{-# OPTIONS_GHC -Wall -Werror -O2 #-}
+{-# OPTIONS_GHC -Wall -Werror -O2 -XScopedTypeVariables #-}
 
 import Graphics.Vty
-import Control.Exception(bracket)
+import Control.Exception(bracket, catch, SomeException)
 import System.Exit(ExitCode(..), exitWith)
 import System.IO(Handle, withFile, IOMode(ReadMode,WriteMode,AppendMode), hGetLine, hPutStrLn, hPutStr)
 import System.Environment(getArgs)
@@ -55,10 +55,10 @@ doesFileExist' :: FilePath -> IO Bool
 doesFileExist' path = expandFileName path >>= doesFileExist
 
 loadConfig :: IO Config
-loadConfig = catch load def
+loadConfig = Control.Exception.catch load def
         where
-            load = fmap read (withFile' rcFileName ReadMode hGetLine) :: IO Config
-            def _ = return $ Config Freq defHistFileName defFavFileName defOutputFile False
+            load = fmap read (withFile' rcFileName ReadMode hGetLine)
+            def (_ :: SomeException) = return $ Config Freq defHistFileName defFavFileName defOutputFile False
 
 saveConfig :: Config -> IO ()
 saveConfig cfg = withFile' rcFileName WriteMode $ flip hPutStrLn (show cfg)
