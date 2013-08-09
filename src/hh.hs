@@ -6,7 +6,7 @@ import System.Exit(ExitCode(..), exitWith)
 import System.IO(Handle, withFile, IOMode(ReadMode,WriteMode,AppendMode), hGetLine, hPutStrLn, hPutStr)
 import System.Environment(getArgs)
 import System.Directory(doesFileExist,getHomeDirectory)
-import Data.List(group, nubBy, sort, sortBy, isPrefixOf, delete, find, intersect)
+import Data.List(group, nubBy, sort, sortBy, isInfixOf, isPrefixOf, delete, find, intersect)
 import Data.Ord(comparing)
 import Data.Maybe(fromJust)
 import Data.Function(on)
@@ -188,7 +188,7 @@ select    vty    cfg       bounds@(width, height) ls'       isFav        showFun
 
         help                                    = helpScreen vty bounds >> same
 
-        ls                                      = nubBy ((==) `on` fst) $ filter (isPrefixOf word . fst) ls'
+        ls                                      = nubBy ((==) `on` fst) $ filter (isInfixOf word . fst) ls'
 
         cursor                                  = Cursor (fromInt $ length word + length prefix + 1) 0
 
@@ -201,7 +201,7 @@ select    vty    cfg       bounds@(width, height) ls'       isFav        showFun
 
         items                                   = map mkLine [top..min (top + height - 2) (length ls - 1)]
 
-        complete                                = let word' = maxPrefix (map fst ls) word
+        complete                                = let word' = maxPrefix (filter isPrefixOf word (map fst ls)) word
                                                   in  again (0, 0, word')
 
         reduce ch                               = again (0, 0, word ++ [ch])
