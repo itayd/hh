@@ -201,7 +201,7 @@ select    vty    cfg       bounds@(width, height) ls'       isFav        showFun
 
         items                                   = map mkLine [top..min (top + height - 2) (length ls - 1)]
 
-        complete                                = let word' = maxPrefix (filter isPrefixOf word (map fst ls)) word
+        complete                                = let word' = maxPrefix (filter (isPrefixOf word) (map fst ls)) word
                                                   in  again (0, 0, word')
 
         reduce ch                               = again (0, 0, word ++ [ch])
